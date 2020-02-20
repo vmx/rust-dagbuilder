@@ -1,0 +1,19 @@
+[package]
+name = "dagbuilder"
+version = "0.1.0"
+authors = ["Volker Mische <volker.mische@gmail.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+#libipld = { git = "https://github.com/ipfs-rust/rust-ipld.git" }
+#libipld-base = { git = "https://github.com/ipfs-rust/rust-ipld.git" }
+libipld = { path = "../ipfs-rust/rust-ipld" }
+libipld-base = { path = "../ipfs-rust/rust-ipld/base" }
+clap = "2.33.0"
+futures = "0.3.1"
+cid = "0.3.1"
+multihash = "0.9.3"
+#multihash = "0.9.3"
+#multihash = { git = "https://github.com/dvc94ch/rust-multihash", branch = "cli" }
