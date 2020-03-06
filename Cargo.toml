@@ -12,8 +12,4 @@ edition = "2018"
 libipld = { path = "../ipfs-rust/rust-ipld" }
 libipld-base = { path = "../ipfs-rust/rust-ipld/base" }
 clap = "2.33.0"
-futures = "0.3.1"
-cid = "0.3.1"
-multihash = "0.9.3"
-#multihash = "0.9.3"
-#multihash = { git = "https://github.com/dvc94ch/rust-multihash", branch = "cli" }
+thiserror = "1.0.11"

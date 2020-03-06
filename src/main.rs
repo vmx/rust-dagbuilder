@@ -1,15 +1,27 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-use futures::executor::block_on;
+use thiserror::Error;
 
 //use clap::{App, Arg};
 use libipld::cbor::{CborError, DagCborCodec};
-use libipld::hash::{Hash, HashDyn, Sha2_256};
 use libipld::ipld::Ipld;
 use libipld::Cid;
-use libipld_base::codec::{Codec, CodecDyn};
-use libipld_base::error::BlockError;
+use libipld_base::cid;
+use libipld_base::codec::Codec;
+use libipld_base::multihash::{self, MultihashDigest, Sha2_256};
+
+#[derive(Error, Debug)]
+pub enum BlockError {
+    #[error("Cannot decode block.")]
+    DecodeError,
+    #[error("Cannot encode block.")]
+    EncodeError,
+    #[error("Cannot find codec implementation.")]
+    CodecNotFound,
+    #[error("Cannot find hash algorithm implementation.")]
+    HashAlgNotFound,
+}
 
 #[derive(Debug, Clone)]
 struct MyNode {
@@ -29,15 +41,15 @@ impl From<MyNode> for Ipld {
 /// A registry for IPLD Codecs.
 pub trait Registry {
     /// Get a codec implementation by Multicodec
-    fn get_codec<'a>(multicodec: cid::Codec) -> Option<&'a dyn CodecDyn<Error = CborError>>;
+    fn get_codec<'a>(multicodec: cid::Codec) -> Option<&'a dyn Codec<Error = CborError>>;
     /// Get a hash algorithm implementation by Multicodec
-    fn get_hash_alg<'a>(multicodec: multihash::Hash) -> Option<&'a dyn HashDyn>;
+    fn get_hash_alg<'a>(multicodec: multihash::Code) -> Option<&'a dyn MultihashDigest>;
 }
 
 struct DefaultRegistry {}
 impl Registry for DefaultRegistry {
     //fn get_codec(multicodec: cid::Codec) -> Option<Box<dyn Codec<Error=CborError>>> {
-    fn get_codec<'a>(multicodec: cid::Codec) -> Option<&'a dyn CodecDyn<Error = CborError>> {
+    fn get_codec<'a>(multicodec: cid::Codec) -> Option<&'a dyn Codec<Error = CborError>> {
         match multicodec {
             cid::Codec::DagCBOR => Some(&DagCborCodec),
             _ => {
@@ -46,7 +58,7 @@ impl Registry for DefaultRegistry {
             }
         }
     }
-    fn get_hash_alg<'a>(multicodec: multihash::Hash) -> Option<&'a dyn HashDyn> {
+    fn get_hash_alg<'a>(multicodec: multihash::Code) -> Option<&'a dyn MultihashDigest> {
         //match multicodec {
         //    multihash::Hash::SHA2256 => Some(&Sha2_256),
         //    _ => {
@@ -58,124 +70,155 @@ impl Registry for DefaultRegistry {
     }
 }
 
+/// A `Block` is an IPLD object together with a CID. The data can be encoded and decoded.
+///
+/// All operations are cached. This means that encoding, decoding and CID calculation happens
+/// at most once. All subsequent calls will use a cached version.
 pub struct Block<'a> {
     cid: Option<Cid>,
-    data: Option<Vec<u8>>,
+    raw: Option<Vec<u8>>,
     node: Option<Ipld>,
-    codec: &'a dyn CodecDyn<Error = CborError>,
-    hash_alg: &'a dyn HashDyn,
+    codec: &'a dyn Codec<Error = CborError>,
+    hash_alg: &'a dyn MultihashDigest,
 }
 
 impl<'a> Block<'a> {
-    pub fn new<R>(cid: Cid, data: Vec<u8>) -> Self
+    /// Create a new `Block` from the given CID and raw binary data.
+    ///
+    /// It needs a registry that contains codec and hash algorithms implementations in order to
+    /// be able to decode the data into IPLD.
+    pub fn new<R>(cid: Cid, raw: Vec<u8>) -> Result<Self, BlockError>
     where
         R: Registry,
     {
-        // TODO vmx 2019-01-31: Get it from the CID instead of hard-coding it
-        let codec = R::get_codec(cid::Codec::DagCBOR).unwrap();
-        // TODO vmx 2019-01-31: Get it from the CID instead of hard-coding it
-        let hash_alg = R::get_hash_alg(multihash::Hash::SHA2512).unwrap();
-        Block {
+        let codec_code = cid.codec();
+        let codec = R::get_codec(codec_code).ok_or(BlockError::CodecNotFound)?;
+
+        let hash_alg_code = cid.hash().algorithm();
+        let hash_alg = R::get_hash_alg(hash_alg_code).ok_or(BlockError::HashAlgNotFound)?;
+
+        Ok(Block {
             cid: Some(cid),
-            data: Some(data),
+            raw: Some(raw),
             node: None,
             codec,
-            hash_alg,
-        }
+            hash_alg: hash_alg,
+        })
     }
 
+    /// Create a new `Block` from the given IPLD object, codec and hash algorithm.
+    ///
+    /// No computation is done, the CID creation and the encoding will only be performed when the
+    /// corresponding methods are called.
     pub fn encoder(
         node: Ipld,
-        codec: &'a dyn CodecDyn<Error = CborError>,
-        hash_alg: &'a dyn HashDyn,
+        codec: &'a dyn Codec<Error = CborError>,
+        hash_alg: &'a dyn MultihashDigest,
     ) -> Self {
         Block {
             cid: None,
-            data: None,
+            raw: None,
             node: Some(node),
             codec,
             hash_alg,
         }
     }
 
+    /// Create a new `Block` from encoded data, codec and hash algorithm.
+    ///
+    /// No computation is done, the CID creation and the decoding will only be performed when the
+    /// corresponding methods are called.
     pub fn decoder(
-        data: Vec<u8>,
-        codec: &'a dyn CodecDyn<Error = CborError>,
-        hash_alg: &'a dyn HashDyn,
+        raw: Vec<u8>,
+        codec: &'a dyn Codec<Error = CborError>,
+        hash_alg: &'a dyn MultihashDigest,
     ) -> Self {
         Block {
             cid: None,
-            data: Some(data),
+            raw: Some(raw),
             node: None,
             codec,
             hash_alg,
         }
     }
 
-    pub fn decode(&mut self) -> Ipld {
+    /// Decode the `Block` into an IPLD object.
+    ///
+    /// The actual decoding is only performed if the object doesn't have a copy of the IPLD
+    /// object yet. If that method was called before, it returns the cached result.
+    pub fn decode(&mut self) -> Result<Ipld, BlockError> {
         if let Some(node) = &self.node {
-            node.clone()
-        } else if let Some(data) = &self.data {
-            let decoded = block_on(self.codec.decode(&data)).unwrap();
+            Ok(node.clone())
+        } else if let Some(raw) = &self.raw {
+            let decoded = self.codec.decode(&raw).unwrap();
             self.node = Some(decoded.clone());
-            decoded
+            Ok(decoded)
         } else {
-            panic!("no data found, cannot decode block")
+            Err(BlockError::DecodeError)
         }
     }
 
-    pub fn encode(&mut self) -> Vec<u8> {
-        if let Some(data) = &self.data {
-            data.clone()
-        } else if let Some(node) = &self.node{
-            let encoded = block_on(self.codec.encode(&node)).unwrap().to_vec();
-            self.data = Some(encoded.clone());
-            encoded
+    /// Encode the `Block` into raw binary data.
+    ///
+    /// The actual encoding is only performed if the object doesn't have a copy of the encoded
+    /// raw binary data yet. If that method was called before, it returns the cached result.
+    pub fn encode(&mut self) -> Result<Vec<u8>, BlockError> {
+        if let Some(raw) = &self.raw {
+            Ok(raw.clone())
+        } else if let Some(node) = &self.node {
+            let encoded = self.codec.encode(&node).unwrap().to_vec();
+            self.raw = Some(encoded.clone());
+            Ok(encoded)
         } else {
-            panic!("no data found, cannot decode block")
+            Err(BlockError::EncodeError)
         }
     }
 
-    pub fn cid(&mut self) -> Cid {
+    /// Calculate the CID of the `Block`.
+    ///
+    /// The CID is calculated from the encoded data. If it wasn't encoded before, that
+    /// operation will be performed. If the encoded data is already available, from a previous
+    /// call of `encode()` or because the `Block` was instantiated via `encoder()`, then it
+    /// isn't re-encoded.
+    pub fn cid(&mut self) -> Result<Cid, BlockError> {
         if let Some(cid) = &self.cid {
-            cid.clone()
+            Ok(cid.clone())
         } else {
             // TODO vmx 2020-01-31: should probably be `encodeUnsafe()`
-            let hash = self.hash_alg.digest(&self.encode());
+            let hash = self.hash_alg.digest(&self.encode()?);
             let cid = Cid::new_v1(self.codec.codec(), hash);
-            cid
+            Ok(cid)
         }
     }
 }
 
 impl<'a> fmt::Debug for Block<'a> {
     fn fmt(&self, ff: &mut fmt::Formatter) -> fmt::Result {
-        write!(ff, "Block {{ cid: {:?}, data: {:?} }}", self.cid, self.data)
+        write!(ff, "Block {{ cid: {:?}, raw: {:?} }}", self.cid, self.raw)
     }
 }
 
 fn cid_node(node: MyNode) {
     println!("cidnode: node: {:?}", node);
 
-    //let encoded = DagCborCodec::encode(&Ipld::from(node.clone())).await;
-    //println!("encoded: {:02x?}", encoded);
-    //
+    let mut block_from_encoder = Block::encoder(Ipld::from(node), &DagCborCodec, &Sha2_256);
+    println!("block from encoder: {:02x?}", block_from_encoder);
 
-    //let encoded = Block::encoder::<DagCborCodec, Sha2_256>(&Ipld::from(node));
-    //let encoded = Block::encoder::<DagCborCodec, Sha2_256>(&Ipld::from(node), DagCborCodec, Sha2_256);
-    let mut encoded = Block::encoder(Ipld::from(node), &DagCborCodec, &Sha2_256);
-    println!("encoded: {:02x?}", encoded);
+    let mut block_from_decoder = Block::decoder(
+        block_from_encoder.encode().unwrap(),
+        &DagCborCodec,
+        &Sha2_256,
+    );
+    println!("block from decoder: {:02x?}", block_from_decoder);
 
-    let mut decoded = Block::decoder(encoded.encode(), &DagCborCodec, &Sha2_256);
-    println!("decodec: {:02x?}", decoded);
+    let mut block_from_new = Block::new::<DefaultRegistry>(
+        block_from_decoder.cid().unwrap(),
+        block_from_decoder.encode().unwrap(),
+    ).unwrap();
+    println!("block from new: {:02x?}", block_from_new);
 
-    //let block = Block::new(
-    //    encoded.cid.clone(),
-    //    encoded.data.clone(),
-    //    &DefaultRegistry {},
-    //);
-    let block = Block::new::<DefaultRegistry>(decoded.cid(), decoded.encode());
-    println!("block:   {:02x?}", block);
+    let decoded = block_from_new.decode();
+    println!("decoded: {:?}", decoded);
 }
 
 fn main() {
@@ -201,6 +244,5 @@ fn main() {
         is: true,
     };
 
-    //block_on(cid_node(my_node));
     cid_node(my_node);
 }
