@@ -13,3 +13,10 @@ libipld = { path = "../ipfs-rust/rust-ipld" }
 libipld-base = { path = "../ipfs-rust/rust-ipld/base" }
 clap = "2.33.0"
 thiserror = "1.0.11"
+
+[patch.crates-io]
+multihash = { path = "../rust-multihash" }
+cid = { path = "../rust-cid" }
+
+[patch."https://github.com/multiformats/rust-cid"]
+cid = { path = "../rust-cid" }

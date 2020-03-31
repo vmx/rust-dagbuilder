@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::convert::TryFrom;
 use std::fmt;
 
 use thiserror::Error;
@@ -6,10 +7,42 @@ use thiserror::Error;
 //use clap::{App, Arg};
 use libipld::cbor::{CborError, DagCborCodec};
 use libipld::ipld::Ipld;
-use libipld::Cid;
-use libipld_base::cid;
+use libipld_base::cid::{CidGeneric};
 use libipld_base::codec::Codec;
-use libipld_base::multihash::{self, MultihashDigest, Sha2_256};
+use libipld_base::multihash::{Code, MultihashDigest};
+
+#[derive(Clone, Copy, Debug)]
+enum IpldCodec {
+    DagCbor = 0x71,
+}
+
+impl From<IpldCodec> for u64 {
+    /// Return the codec as integer value.
+    fn from(codec: IpldCodec) -> Self {
+        codec as _
+    }
+}
+
+impl TryFrom<u64> for IpldCodec {
+    type Error = String;
+
+    /// Return the `IpldCodeC` based on the integer value. Error if no matching code exists.
+    fn try_from(raw: u64) -> Result<Self, Self::Error> {
+        match raw {
+            0x71 => Ok(IpldCodec::DagCbor),
+            _ => Err("Cannot convert code to codec.".to_string()),
+        }
+    }
+}
+
+//impl<E> From<IpldCodec> for Box<dyn Codec<Error = E>> {
+impl From<IpldCodec> for Box<dyn Codec<Error = CborError>> {
+    fn from(codec: IpldCodec) -> Self {
+        match codec {
+            IpldCodec::DagCbor => Box::new(DagCborCodec),
+        }
+    }
+}
 
 #[derive(Error, Debug)]
 pub enum BlockError {
@@ -38,71 +71,52 @@ impl From<MyNode> for Ipld {
     }
 }
 
-/// A registry for IPLD Codecs.
-pub trait Registry {
-    /// Get a codec implementation by Multicodec
-    fn get_codec<'a>(multicodec: cid::Codec) -> Option<&'a dyn Codec<Error = CborError>>;
-    /// Get a hash algorithm implementation by Multicodec
-    fn get_hash_alg<'a>(multicodec: multihash::Code) -> Option<&'a dyn MultihashDigest>;
-}
-
-struct DefaultRegistry {}
-impl Registry for DefaultRegistry {
-    //fn get_codec(multicodec: cid::Codec) -> Option<Box<dyn Codec<Error=CborError>>> {
-    fn get_codec<'a>(multicodec: cid::Codec) -> Option<&'a dyn Codec<Error = CborError>> {
-        match multicodec {
-            cid::Codec::DagCBOR => Some(&DagCborCodec),
-            _ => {
-                println!("codec not supported");
-                None
-            }
-        }
-    }
-    fn get_hash_alg<'a>(multicodec: multihash::Code) -> Option<&'a dyn MultihashDigest> {
-        //match multicodec {
-        //    multihash::Hash::SHA2256 => Some(&Sha2_256),
-        //    _ => {
-        //        println!("hash not supported");
-        //        None
-        //    }
-        //}
-        Some(&Sha2_256)
-    }
-}
-
 /// A `Block` is an IPLD object together with a CID. The data can be encoded and decoded.
 ///
 /// All operations are cached. This means that encoding, decoding and CID calculation happens
 /// at most once. All subsequent calls will use a cached version.
-pub struct Block<'a> {
-    cid: Option<Cid>,
+//pub struct Block<'a, T> {
+pub struct Block<T, U>
+where
+    T: Copy + TryFrom<u64> + Into<u64>,
+    U: Copy + TryFrom<u64> + Into<u64>,
+{
+    //where T: Into<Box<dyn MultihashDigest<Code>>> {
+    cid: Option<CidGeneric<T, U>>,
     raw: Option<Vec<u8>>,
     node: Option<Ipld>,
-    codec: &'a dyn Codec<Error = CborError>,
-    hash_alg: &'a dyn MultihashDigest,
+    //codec: &'a dyn Codec<Error = CborError>,
+    codec: U,
+    hash_alg: T,
 }
 
-impl<'a> Block<'a> {
+impl<T, U> Block<T, U>
+where
+    T: Copy + TryFrom<u64> + Into<u64>,
+    U: Copy + TryFrom<u64> + Into<u64>,
+    Box<dyn MultihashDigest<T>>: From<T>,
+    //Box<dyn Codec<Error = CborError>>: From<T>,
+    //Debug + Fail + Into<BlockError>;
+    //Box<dyn Codec<Error = dyn std::error::Error>>: From<U>,
+    Box<dyn Codec<Error = CborError>>: From<U>,
+{
     /// Create a new `Block` from the given CID and raw binary data.
     ///
     /// It needs a registry that contains codec and hash algorithms implementations in order to
     /// be able to decode the data into IPLD.
-    pub fn new<R>(cid: Cid, raw: Vec<u8>) -> Result<Self, BlockError>
+    pub fn new(cid: CidGeneric<T, U>, raw: Vec<u8>) -> Result<Self, BlockError>
     where
-        R: Registry,
+        <T as std::convert::TryFrom<u64>>::Error: std::fmt::Debug,
+        <U as std::convert::TryFrom<u64>>::Error: std::fmt::Debug,
     {
-        let codec_code = cid.codec();
-        let codec = R::get_codec(codec_code).ok_or(BlockError::CodecNotFound)?;
-
-        let hash_alg_code = cid.hash().algorithm();
-        let hash_alg = R::get_hash_alg(hash_alg_code).ok_or(BlockError::HashAlgNotFound)?;
-
+        let codec = cid.codec();
+        let hash_alg = cid.hash().algorithm();
         Ok(Block {
             cid: Some(cid),
             raw: Some(raw),
             node: None,
             codec,
-            hash_alg: hash_alg,
+            hash_alg,
         })
     }
 
@@ -110,11 +124,7 @@ impl<'a> Block<'a> {
     ///
     /// No computation is done, the CID creation and the encoding will only be performed when the
     /// corresponding methods are called.
-    pub fn encoder(
-        node: Ipld,
-        codec: &'a dyn Codec<Error = CborError>,
-        hash_alg: &'a dyn MultihashDigest,
-    ) -> Self {
+    pub fn encoder(node: Ipld, codec: U, hash_alg: T) -> Self {
         Block {
             cid: None,
             raw: None,
@@ -128,11 +138,7 @@ impl<'a> Block<'a> {
     ///
     /// No computation is done, the CID creation and the decoding will only be performed when the
     /// corresponding methods are called.
-    pub fn decoder(
-        raw: Vec<u8>,
-        codec: &'a dyn Codec<Error = CborError>,
-        hash_alg: &'a dyn MultihashDigest,
-    ) -> Self {
+    pub fn decoder(raw: Vec<u8>, codec: U, hash_alg: T) -> Self {
         Block {
             cid: None,
             raw: Some(raw),
@@ -150,7 +156,11 @@ impl<'a> Block<'a> {
         if let Some(node) = &self.node {
             Ok(node.clone())
         } else if let Some(raw) = &self.raw {
-            let decoded = self.codec.decode(&raw).unwrap();
+            //let decoded = Box::Codec<Error = BlockError::HashAlgNotFound>::from(self.codec).decode(&raw).unwrap();
+            //let decoded = Box::Codec<Codec::Error = ()>::from(self.codec).decode(&raw).unwrap();
+            let decoded = Box::<dyn Codec<Error = CborError>>::from(self.codec)
+                .decode(&raw)
+                .unwrap();
             self.node = Some(decoded.clone());
             Ok(decoded)
         } else {
@@ -166,7 +176,11 @@ impl<'a> Block<'a> {
         if let Some(raw) = &self.raw {
             Ok(raw.clone())
         } else if let Some(node) = &self.node {
-            let encoded = self.codec.encode(&node).unwrap().to_vec();
+            //let encoded = self.codec.encode(&node).unwrap().to_vec();
+            let encoded = Box::<dyn Codec<Error = CborError>>::from(self.codec)
+                .encode(&node)
+                .unwrap()
+                .to_vec();
             self.raw = Some(encoded.clone());
             Ok(encoded)
         } else {
@@ -180,19 +194,28 @@ impl<'a> Block<'a> {
     /// operation will be performed. If the encoded data is already available, from a previous
     /// call of `encode()` or because the `Block` was instantiated via `encoder()`, then it
     /// isn't re-encoded.
-    pub fn cid(&mut self) -> Result<Cid, BlockError> {
+    pub fn cid(&mut self) -> Result<CidGeneric<T, U>, BlockError>
+    where
+        <T as std::convert::TryFrom<u64>>::Error: std::fmt::Debug,
+        <U as std::convert::TryFrom<u64>>::Error: std::fmt::Debug,
+    {
         if let Some(cid) = &self.cid {
             Ok(cid.clone())
         } else {
             // TODO vmx 2020-01-31: should probably be `encodeUnsafe()`
-            let hash = self.hash_alg.digest(&self.encode()?);
-            let cid = Cid::new_v1(self.codec.codec(), hash);
+            let hash = Box::<dyn MultihashDigest<T>>::from(self.hash_alg).digest(&self.encode()?);
+            let cid = CidGeneric::new_v1(self.codec, hash);
             Ok(cid)
         }
     }
 }
 
-impl<'a> fmt::Debug for Block<'a> {
+impl<T, U> fmt::Debug for Block<T, U>
+where
+    T: Copy + TryFrom<u64> + Into<u64> + fmt::Debug,
+    U: Copy + TryFrom<u64> + Into<u64> + fmt::Debug,
+    T: Into<Box<dyn MultihashDigest<Code>>>,
+{
     fn fmt(&self, ff: &mut fmt::Formatter) -> fmt::Result {
         write!(ff, "Block {{ cid: {:?}, raw: {:?} }}", self.cid, self.raw)
     }
@@ -201,19 +224,21 @@ impl<'a> fmt::Debug for Block<'a> {
 fn cid_node(node: MyNode) {
     println!("cidnode: node: {:?}", node);
 
-    let mut block_from_encoder = Block::encoder(Ipld::from(node), &DagCborCodec, &Sha2_256);
+    //let mut block_from_encoder = Block::encoder(Ipld::from(node), &DagCborCodec, Code::Sha2_256);
+    let mut block_from_encoder =
+        Block::encoder(Ipld::from(node), IpldCodec::DagCbor, Code::Sha2_256);
     println!("block from encoder: {:02x?}", block_from_encoder);
 
     let mut block_from_decoder = Block::decoder(
         block_from_encoder.encode().unwrap(),
-        &DagCborCodec,
-        &Sha2_256,
+        IpldCodec::DagCbor,
+        Code::Sha2_256,
     );
     println!("block from decoder: {:02x?}", block_from_decoder);
 
-    let mut block_from_new = Block::new::<DefaultRegistry>(
-        block_from_decoder.cid().unwrap(),
-        block_from_decoder.encode().unwrap(),
+    let mut block_from_new = Block::new(
+       block_from_decoder.cid().unwrap(),
+       block_from_decoder.encode().unwrap(),
     ).unwrap();
     println!("block from new: {:02x?}", block_from_new);
 
