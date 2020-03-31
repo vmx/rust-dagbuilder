@@ -26,7 +26,7 @@ impl From<IpldCodec> for u64 {
 impl TryFrom<u64> for IpldCodec {
     type Error = String;
 
-    /// Return the `IpldCodeC` based on the integer value. Error if no matching code exists.
+    /// Return the `IpldCodec` based on the integer value. Error if no matching code exists.
     fn try_from(raw: u64) -> Result<Self, Self::Error> {
         match raw {
             0x71 => Ok(IpldCodec::DagCbor),
