@@ -71,26 +71,26 @@ impl From<MyNode> for Ipld {
     }
 }
 
+type Block = BlockGeneric<Code, IpldCodec>;
+
 /// A `Block` is an IPLD object together with a CID. The data can be encoded and decoded.
 ///
 /// All operations are cached. This means that encoding, decoding and CID calculation happens
 /// at most once. All subsequent calls will use a cached version.
 //pub struct Block<'a, T> {
-pub struct Block<T, U>
+pub struct BlockGeneric<T, U>
 where
     T: Copy + TryFrom<u64> + Into<u64>,
     U: Copy + TryFrom<u64> + Into<u64>,
 {
-    //where T: Into<Box<dyn MultihashDigest<Code>>> {
     cid: Option<CidGeneric<T, U>>,
     raw: Option<Vec<u8>>,
     node: Option<Ipld>,
-    //codec: &'a dyn Codec<Error = CborError>,
     codec: U,
     hash_alg: T,
 }
 
-impl<T, U> Block<T, U>
+impl<T, U> BlockGeneric<T, U>
 where
     T: Copy + TryFrom<u64> + Into<u64>,
     U: Copy + TryFrom<u64> + Into<u64>,
@@ -111,7 +111,7 @@ where
     {
         let codec = cid.codec();
         let hash_alg = cid.hash().algorithm();
-        Ok(Block {
+        Ok(Self {
             cid: Some(cid),
             raw: Some(raw),
             node: None,
@@ -125,7 +125,7 @@ where
     /// No computation is done, the CID creation and the encoding will only be performed when the
     /// corresponding methods are called.
     pub fn encoder(node: Ipld, codec: U, hash_alg: T) -> Self {
-        Block {
+        Self {
             cid: None,
             raw: None,
             node: Some(node),
@@ -139,7 +139,7 @@ where
     /// No computation is done, the CID creation and the decoding will only be performed when the
     /// corresponding methods are called.
     pub fn decoder(raw: Vec<u8>, codec: U, hash_alg: T) -> Self {
-        Block {
+        Self {
             cid: None,
             raw: Some(raw),
             node: None,
@@ -210,7 +210,7 @@ where
     }
 }
 
-impl<T, U> fmt::Debug for Block<T, U>
+impl<T, U> fmt::Debug for BlockGeneric<T, U>
 where
     T: Copy + TryFrom<u64> + Into<u64> + fmt::Debug,
     U: Copy + TryFrom<u64> + Into<u64> + fmt::Debug,
