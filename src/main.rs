@@ -5,9 +5,9 @@ use std::fmt;
 use thiserror::Error;
 
 //use clap::{App, Arg};
-use libipld::cbor::{CborError, DagCborCodec};
+use libipld::cbor::DagCborCodec;
 use libipld::ipld::Ipld;
-use libipld_base::cid::{CidGeneric};
+use libipld_base::cid::CidGeneric;
 use libipld_base::codec::Codec;
 use libipld_base::multihash::{Code, MultihashDigest};
 
@@ -35,8 +35,7 @@ impl TryFrom<u64> for IpldCodec {
     }
 }
 
-//impl<E> From<IpldCodec> for Box<dyn Codec<Error = E>> {
-impl From<IpldCodec> for Box<dyn Codec<Error = CborError>> {
+impl From<IpldCodec> for Box<dyn Codec> {
     fn from(codec: IpldCodec) -> Self {
         match codec {
             IpldCodec::DagCbor => Box::new(DagCborCodec),
@@ -95,10 +94,7 @@ where
     T: Copy + TryFrom<u64> + Into<u64>,
     U: Copy + TryFrom<u64> + Into<u64>,
     Box<dyn MultihashDigest<T>>: From<T>,
-    //Box<dyn Codec<Error = CborError>>: From<T>,
-    //Debug + Fail + Into<BlockError>;
-    //Box<dyn Codec<Error = dyn std::error::Error>>: From<U>,
-    Box<dyn Codec<Error = CborError>>: From<U>,
+    Box<dyn Codec>: From<U>,
 {
     /// Create a new `Block` from the given CID and raw binary data.
     ///
@@ -156,11 +152,7 @@ where
         if let Some(node) = &self.node {
             Ok(node.clone())
         } else if let Some(raw) = &self.raw {
-            //let decoded = Box::Codec<Error = BlockError::HashAlgNotFound>::from(self.codec).decode(&raw).unwrap();
-            //let decoded = Box::Codec<Codec::Error = ()>::from(self.codec).decode(&raw).unwrap();
-            let decoded = Box::<dyn Codec<Error = CborError>>::from(self.codec)
-                .decode(&raw)
-                .unwrap();
+            let decoded = Box::<dyn Codec>::from(self.codec).decode(&raw).unwrap();
             self.node = Some(decoded.clone());
             Ok(decoded)
         } else {
@@ -176,8 +168,7 @@ where
         if let Some(raw) = &self.raw {
             Ok(raw.clone())
         } else if let Some(node) = &self.node {
-            //let encoded = self.codec.encode(&node).unwrap().to_vec();
-            let encoded = Box::<dyn Codec<Error = CborError>>::from(self.codec)
+            let encoded = Box::<dyn Codec>::from(self.codec)
                 .encode(&node)
                 .unwrap()
                 .to_vec();
@@ -224,7 +215,6 @@ where
 fn cid_node(node: MyNode) {
     println!("cidnode: node: {:?}", node);
 
-    //let mut block_from_encoder = Block::encoder(Ipld::from(node), &DagCborCodec, Code::Sha2_256);
     let mut block_from_encoder =
         Block::encoder(Ipld::from(node), IpldCodec::DagCbor, Code::Sha2_256);
     println!("block from encoder: {:02x?}", block_from_encoder);
@@ -237,9 +227,10 @@ fn cid_node(node: MyNode) {
     println!("block from decoder: {:02x?}", block_from_decoder);
 
     let mut block_from_new = Block::new(
-       block_from_decoder.cid().unwrap(),
-       block_from_decoder.encode().unwrap(),
-    ).unwrap();
+        block_from_decoder.cid().unwrap(),
+        block_from_decoder.encode().unwrap(),
+    )
+    .unwrap();
     println!("block from new: {:02x?}", block_from_new);
 
     let decoded = block_from_new.decode();
