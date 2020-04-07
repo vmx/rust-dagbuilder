@@ -70,40 +70,39 @@ impl From<MyNode> for Ipld {
     }
 }
 
-type Block = BlockGeneric<Code, IpldCodec>;
+type Block = BlockGeneric<IpldCodec, Code>;
 
 /// A `Block` is an IPLD object together with a CID. The data can be encoded and decoded.
 ///
 /// All operations are cached. This means that encoding, decoding and CID calculation happens
 /// at most once. All subsequent calls will use a cached version.
-//pub struct Block<'a, T> {
-pub struct BlockGeneric<T, U>
+pub struct BlockGeneric<C, H>
 where
-    T: Copy + TryFrom<u64> + Into<u64>,
-    U: Copy + TryFrom<u64> + Into<u64>,
+    C: Copy + TryFrom<u64> + Into<u64>,
+    H: Copy + TryFrom<u64> + Into<u64>,
 {
-    cid: Option<CidGeneric<T, U>>,
+    cid: Option<CidGeneric<C, H>>,
     raw: Option<Vec<u8>>,
     node: Option<Ipld>,
-    codec: U,
-    hash_alg: T,
+    codec: C,
+    hash_alg: H,
 }
 
-impl<T, U> BlockGeneric<T, U>
+impl<C, H> BlockGeneric<C, H>
 where
-    T: Copy + TryFrom<u64> + Into<u64>,
-    U: Copy + TryFrom<u64> + Into<u64>,
-    Box<dyn MultihashDigest<T>>: From<T>,
-    Box<dyn Codec>: From<U>,
+    C: Copy + TryFrom<u64> + Into<u64>,
+    H: Copy + TryFrom<u64> + Into<u64>,
+    Box<dyn Codec>: From<C>,
+    Box<dyn MultihashDigest<H>>: From<H>,
 {
     /// Create a new `Block` from the given CID and raw binary data.
     ///
     /// It needs a registry that contains codec and hash algorithms implementations in order to
     /// be able to decode the data into IPLD.
-    pub fn new(cid: CidGeneric<T, U>, raw: Vec<u8>) -> Result<Self, BlockError>
+    pub fn new(cid: CidGeneric<C, H>, raw: Vec<u8>) -> Result<Self, BlockError>
     where
-        <T as std::convert::TryFrom<u64>>::Error: std::fmt::Debug,
-        <U as std::convert::TryFrom<u64>>::Error: std::fmt::Debug,
+        <C as TryFrom<u64>>::Error: fmt::Debug,
+        <H as TryFrom<u64>>::Error: fmt::Debug,
     {
         let codec = cid.codec();
         let hash_alg = cid.hash().algorithm();
@@ -120,7 +119,7 @@ where
     ///
     /// No computation is done, the CID creation and the encoding will only be performed when the
     /// corresponding methods are called.
-    pub fn encoder(node: Ipld, codec: U, hash_alg: T) -> Self {
+    pub fn encoder(node: Ipld, codec: C, hash_alg: H) -> Self {
         Self {
             cid: None,
             raw: None,
@@ -134,7 +133,7 @@ where
     ///
     /// No computation is done, the CID creation and the decoding will only be performed when the
     /// corresponding methods are called.
-    pub fn decoder(raw: Vec<u8>, codec: U, hash_alg: T) -> Self {
+    pub fn decoder(raw: Vec<u8>, codec: C, hash_alg: H) -> Self {
         Self {
             cid: None,
             raw: Some(raw),
@@ -185,27 +184,27 @@ where
     /// operation will be performed. If the encoded data is already available, from a previous
     /// call of `encode()` or because the `Block` was instantiated via `encoder()`, then it
     /// isn't re-encoded.
-    pub fn cid(&mut self) -> Result<CidGeneric<T, U>, BlockError>
+    pub fn cid(&mut self) -> Result<CidGeneric<C, H>, BlockError>
     where
-        <T as std::convert::TryFrom<u64>>::Error: std::fmt::Debug,
-        <U as std::convert::TryFrom<u64>>::Error: std::fmt::Debug,
+        <C as TryFrom<u64>>::Error: fmt::Debug,
+        <H as TryFrom<u64>>::Error: fmt::Debug,
     {
         if let Some(cid) = &self.cid {
             Ok(cid.clone())
         } else {
             // TODO vmx 2020-01-31: should probably be `encodeUnsafe()`
-            let hash = Box::<dyn MultihashDigest<T>>::from(self.hash_alg).digest(&self.encode()?);
+            let hash = Box::<dyn MultihashDigest<H>>::from(self.hash_alg).digest(&self.encode()?);
             let cid = CidGeneric::new_v1(self.codec, hash);
             Ok(cid)
         }
     }
 }
 
-impl<T, U> fmt::Debug for BlockGeneric<T, U>
+impl<C, H> fmt::Debug for BlockGeneric<C, H>
 where
-    T: Copy + TryFrom<u64> + Into<u64> + fmt::Debug,
-    U: Copy + TryFrom<u64> + Into<u64> + fmt::Debug,
-    T: Into<Box<dyn MultihashDigest<Code>>>,
+    C: Copy + TryFrom<u64> + Into<u64> + fmt::Debug,
+    H: Copy + TryFrom<u64> + Into<u64> + fmt::Debug,
+    H: Into<Box<dyn MultihashDigest<H>>>,
 {
     fn fmt(&self, ff: &mut fmt::Formatter) -> fmt::Result {
         write!(ff, "Block {{ cid: {:?}, raw: {:?} }}", self.cid, self.raw)
