@@ -9,8 +9,8 @@ edition = "2018"
 [dependencies]
 #libipld = { git = "https://github.com/ipfs-rust/rust-ipld.git" }
 #libipld-base = { git = "https://github.com/ipfs-rust/rust-ipld.git" }
-libipld = { path = "../ipfs-rust/rust-ipld" }
-libipld-base = { path = "../ipfs-rust/rust-ipld/base" }
+libipld = { path = "../rust-ipld" }
+libipld-base = { path = "../rust-ipld/base" }
 clap = "2.33.0"
 thiserror = "1.0.11"
 
